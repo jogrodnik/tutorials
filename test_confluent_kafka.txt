@@ -1,3 +1,11 @@
+${http_proxy}=    Get Environment Variable    http_proxy
+    ${https_proxy}=    Get Environment Variable    https_proxy
+    ${no_proxy}=    Get Environment Variable    no_proxy
+    Log To Console    HTTP Proxy: ${http_proxy}
+    Log To Console    HTTPS Proxy: ${https_proxy}
+    Log To Console    No Proxy: ${no_proxy}
+
+
 import requests
 from requests.exceptions import RequestException
 
