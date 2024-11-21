@@ -1,33 +1,103 @@
 import requests
-from confluent_kafka.avro import CachedSchemaRegistryClient
+from requests.exceptions import RequestException
 
 
-class CertificateAuthSchemaRegistryClient(CachedSchemaRegistryClient):
+class SchemaRegistryError(Exception):
+    """Custom exception for Schema Registry errors."""
+    pass
+
+
+class CertificateAuthSchemaRegistryClient:
     """
-    Extend the CachedSchemaRegistryClient to support certificate-based authentication.
+    Custom Schema Registry Client supporting certificate-based authentication.
+
+    This client interacts with a Confluent Schema Registry using HTTPS with client certificates
+    for authentication. It supports operations like fetching subjects, retrieving schemas, and
+    fetching schema metadata.
     """
-    def __init__(self, schema_registry_url, cert_path, key_path, ca_path):
+
+    def __init__(self, schema_registry_url, cert_path, key_path, ca_path, debug=False):
+        """
+        Initialize the Schema Registry Client.
+
+        :param schema_registry_url: URL of the Schema Registry
+        :param cert_path: Path to the client certificate file (.pem)
+        :param key_path: Path to the client private key file (.pem)
+        :param ca_path: Path to the CA certificate file (.pem)
+        :param debug: Enable debug logging
+        """
+        self.schema_registry_url = schema_registry_url.rstrip("/")
         self.cert_path = cert_path
         self.key_path = key_path
         self.ca_path = ca_path
-        super().__init__({"url": schema_registry_url})
+        self.debug = debug
 
-    def _send_request(self, url, method="GET"):
+    def _log_debug(self, message):
+        """Print debug messages if debug mode is enabled."""
+        if self.debug:
+            print(f"[DEBUG] {message}")
+
+    def _send_request(self, endpoint, method="GET", data=None):
         """
-        Override _send_request to use certificates for HTTPS requests.
+        Internal method to send HTTP requests with certificate-based authentication.
+
+        :param endpoint: API endpoint relative to the Schema Registry base URL
+        :param method: HTTP method ('GET', 'POST', etc.)
+        :param data: Optional payload for POST/PUT requests
+        :return: JSON response data
+        :raises SchemaRegistryError: On request failure
         """
+        url = f"{self.schema_registry_url}/{endpoint}"
+        self._log_debug(f"Sending {method} request to {url} with data: {data}")
         try:
             response = requests.request(
-                method,
-                url,
+                method=method,
+                url=url,
+                json=data,
                 cert=(self.cert_path, self.key_path),
                 verify=self.ca_path,
-                timeout=10
+                timeout=10,
             )
+            self._log_debug(f"Response Status Code: {response.status_code}")
+            self._log_debug(f"Response Content: {response.text}")
+
             response.raise_for_status()
             return response.json()
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Request failed: {e}")
+        except RequestException as e:
+            error_message = f"Request to {url} failed: {str(e)}"
+            self._log_debug(error_message)
+            raise SchemaRegistryError(error_message)
+
+    def get_subjects(self):
+        """
+        Fetch all subjects from the Schema Registry.
+
+        :return: List of subject names
+        :raises SchemaRegistryError: On request failure
+        """
+        return self._send_request("subjects")
+
+    def get_latest_schema(self, subject):
+        """
+        Fetch the latest schema metadata for a specific subject.
+
+        :param subject: Name of the subject
+        :return: Dictionary with schema metadata (id, version, schema)
+        :raises SchemaRegistryError: On request failure
+        """
+        endpoint = f"subjects/{subject}/versions/latest"
+        return self._send_request(endpoint)
+
+    def get_schema_by_id(self, schema_id):
+        """
+        Fetch a schema by its unique ID.
+
+        :param schema_id: Unique schema ID
+        :return: Dictionary with the schema content
+        :raises SchemaRegistryError: On request failure
+        """
+        endpoint = f"schemas/ids/{schema_id}"
+        return self._send_request(endpoint)
 
 
 # Configuration
@@ -35,53 +105,38 @@ SCHEMA_REGISTRY_URL = "https://your-schema-registry-url"  # Replace with your Sc
 CERTIFICATE_PATH = "/path/to/certificate.pem"  # Client certificate
 PRIVATE_KEY_PATH = "/path/to/private_key.pem"  # Private key
 CA_CERTIFICATE_PATH = "/path/to/ca_certificate.pem"  # CA certificate
-
-# Initialize the client with certificate authentication
-schema_registry_client = CertificateAuthSchemaRegistryClient(
-    schema_registry_url=SCHEMA_REGISTRY_URL,
-    cert_path=CERTIFICATE_PATH,
-    key_path=PRIVATE_KEY_PATH,
-    ca_path=CA_CERTIFICATE_PATH
-)
-
-
-def list_subjects():
-    """
-    List all subjects in the Schema Registry.
-    """
-    try:
-        subjects = schema_registry_client.get_subjects()
-        print(f"Subjects: {subjects}")
-        return subjects
-    except Exception as e:
-        print(f"Error fetching subjects: {e}")
-
-
-def get_latest_schema(subject):
-    """
-    Get the latest schema for a given subject.
-    """
-    try:
-        schema_metadata = schema_registry_client.get_latest_schema(subject)
-        print(f"Subject: {subject}")
-        print(f"Schema ID: {schema_metadata[0]}")
-        print(f"Schema Version: {schema_metadata[1]}")
-        print(f"Schema: {schema_metadata[2].to_json()}")
-        return schema_metadata
-    except Exception as e:
-        print(f"Error fetching schema for {subject}: {e}")
+DEBUG_MODE = True  # Enable debug logging
 
 
 def main():
-    # List all subjects
-    subjects = list_subjects()
-    if not subjects:
-        print("No subjects found.")
-        return
+    """
+    Example usage of CertificateAuthSchemaRegistryClient.
+    """
+    try:
+        # Initialize the client
+        client = CertificateAuthSchemaRegistryClient(
+            schema_registry_url=SCHEMA_REGISTRY_URL,
+            cert_path=CERTIFICATE_PATH,
+            key_path=PRIVATE_KEY_PATH,
+            ca_path=CA_CERTIFICATE_PATH,
+            debug=DEBUG_MODE,
+        )
 
-    # Fetch and display the latest schema for each subject
-    for subject in subjects:
-        get_latest_schema(subject)
+        # Fetch all subjects
+        subjects = client.get_subjects()
+        print(f"Subjects found: {subjects}")
+
+        # Fetch and display the latest schema for each subject
+        for subject in subjects:
+            schema_metadata = client.get_latest_schema(subject)
+            print(f"\nSubject: {subject}")
+            print(f"Schema ID: {schema_metadata['id']}")
+            print(f"Version: {schema_metadata['version']}")
+            print(f"Schema: {schema_metadata['schema']}")
+    except SchemaRegistryError as e:
+        print(f"Schema Registry Error: {e}")
+    except Exception as e:
+        print(f"Unexpected Error: {e}")
 
 
 if __name__ == "__main__":
